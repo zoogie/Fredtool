@@ -1,2 +1,0 @@
-# Fredtool
-FRogminer seEDminer
