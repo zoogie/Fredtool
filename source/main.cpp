@@ -23,7 +23,7 @@ u8 *readAllBytes(const char *filename, u32 &filelen, u32 custom_memsize) {
 	filelen = ftell(fileptr);
 	rewind(fileptr);
 	
-	if(filelen > 0x21E000) filelen=0x21E000; //keep dsiware buffer reasonable - some dsiwares can get really large and we don't need to go over flipnote injected DS dlp size
+	if(filelen > 0x380000) filelen=0x380000; //keep dsiware buffer reasonable - some dsiwares can get really large and we don't need to go too far over flipnote injected DS int size
 	
 	buflen=filelen; 
 	if(custom_memsize){
@@ -48,7 +48,7 @@ void writeAllBytes(const char *filename, u8 *filedata, u32 filelen) {
 }
 
 void dumpMsedData(u8 *msed){
-	u32 keyy[4]={0};
+u32 keyy[4]={0};
 	int mdata[3]={33,33,33};
 	memcpy(keyy, msed+0x110, 0x10);
 	mdata[0]=(keyy[0]&0xFFFFFF00) | 0x80;
@@ -64,7 +64,7 @@ void dumpMsedData(u8 *msed){
 void makeTad(char *filename, u32 ishax) {
 	// === DATA ===
 	u8 *dsiware, *resources, *ctcert, *injection, *tmd, *banner, *movable;
-	u32 dsiware_size, resources_size, ctcert_size, movable_size, injection_size, banner_size, tmd_size;
+	u32 dsiware_size, resources_size, ctcert_size, movable_size, injection_size, banner_size, tmd_size, frog_size=0x00218800, int_size=0x13EC00;
 	u8 header_hash[0x20] = {0}, srl_hash[0x20] = {0}, tmp_hash[0x20] = {0}, tmd_hash[0x20]={0}, banner_hash[0x20]={0};
 	u8 normalKey[0x10] = {0}, normalKey_CMAC[0x10] = {0};
 	u8 header[0xF0]={0};
@@ -74,8 +74,8 @@ void makeTad(char *filename, u32 ishax) {
 	// === PREP ===
 	printf("\nReading %s\n", filename);
 	dsiware = readAllBytes(filename, dsiware_size, 0x21E000);
-	if (dsiware_size > 0x4000000) {
-		error("Provided dsiware seems to be way too large!","", true);
+	if (dsiware_size > 0x4000000) { //64 MBs
+		error("Provided dsiware seems to be way too large!","", true); //the biggest dsiware is about 50MB in Japan (Advance Wars)
 	}
 	
 	printf("Reading & parsing movable.sed\n");
@@ -84,21 +84,33 @@ void makeTad(char *filename, u32 ishax) {
 		error("Provided movable.sed is not 320 or 288 bytes of size","", true);
 	}
 	
-	printf("Reading resources/frogcertXL.bin\n");
-	resources = readAllBytes(ishax ? "resources/frogcertXL.bin" : "resources/dlpcertXL.bin", resources_size, 0);
+	printf("Reading resources/fredcertXL.bin\n");
+	resources = readAllBytes("resources/fredcertXL.bin", resources_size, 0);
 	calculateSha256(resources, resources_size, tmp_hash);
-	if (memcmp(tmp_hash, ishax ? frogcertXL_hash : dlpcertXL_hash, 0x20) != 0) {
+	if (memcmp(tmp_hash, fredcertXL_hash, 0x20) != 0) {
 		error("Provided resources file's hash doesn't match","", true);
 	}
 	
-	injection = resources;
-	injection_size = resources_size - 0x4CDE; 
-	banner = injection + injection_size;
-	banner_size = 0x4000;
-	tmd = banner + banner_size;
-	tmd_size = 0xB40;
-	ctcert = tmd + tmd_size;
-	ctcert_size = 0x19E;
+	if(ishax){    //0x00218800 + 0x13EC00 + 0x4000 + 0x4000 + 0xB40 + 0x19E;
+		injection = resources;
+		injection_size = frog_size; 
+		banner = injection + injection_size + int_size;
+		banner_size = 0x4000;
+		tmd = banner + (banner_size*2);
+		tmd_size = 0xB40;
+		ctcert = tmd + tmd_size;
+		ctcert_size = 0x19E;
+	}
+	else{
+		injection = resources + frog_size;
+		injection_size = int_size; 
+		banner = injection + int_size + 0x4000;
+		banner_size = 0x4000;
+		tmd = banner + banner_size;
+		tmd_size = 0xB40;
+		ctcert = tmd + tmd_size;
+		ctcert_size = 0x19E;
+	}
 	
 	dsiware_size = injection_size + 0x51B0;                      //or (0x4000+0x20)+(0xF0+0x20)+(0x4E0+0x20)+(0xB40+0x20)+(injection_size+0x20) = 0x21D9B0 or 0x6ED70
 	printf("New DSiWare size: %08X - Expected: %08X\n", dsiware_size, (0x4000+0x20)+(0xF0+0x20)+(0x4E0+0x20)+(0xB40+0x20)+(injection_size+0x20));  //injection size 0x00218800 or 0x00069BC0
@@ -128,13 +140,14 @@ void makeTad(char *filename, u32 ishax) {
 	printf("Writing new header data\n");
 	header_out.magic=0x54444633; //"3FDT"
 	header_out.group_id=0;
-	header_out.version=0x400;
-	memcpy(&header_out.sha256_ivs, header + 0x8, 0x20);
-	memcpy(&header_out.aes_zeroblock, header + 0x28, 0x10);
-	header_out.tid=0x00048005484E4441; //DS dlp
+	header_out.version=0x800;
+	memcpy(&header_out.sha256_ivs, header + 0x8, 0x20);     //the only thing in a rebuilt TAD that we can't generate ourselves
+	memcpy(&header_out.aes_zeroblock, header + 0x28, 0x10); //this doesn't appear to be checked but we'll include it anyway
+	header_out.tid=0x0004800542383841; //DS internet
 	header_out.installed_size=(injection_size+0x20000)&0xFFFF8000;
 	header_out.content[0]=0xB34; //tmd size
 	header_out.content[1]=injection_size; //srl size
+	header_out.padding[0]=0x02;
 	memcpy(&header_out.padding[0x50], "\x40\xE2\x09\x08\x60\xE2\x09\x08\x10", 9); //no idea what this crap is, but the 3ds wants it lol
 
 	printf("Placing back header\n");
@@ -157,7 +170,7 @@ void makeTad(char *filename, u32 ishax) {
 	memcpy(footer->hdr_hash , header_hash, 0x20); //Fix the header hash
 	memcpy(footer->tmd_hash , tmd_hash, 0x20); //Fix the tmd hash
 	memcpy(footer->content_hash[0], srl_hash, 0x20);	//Fix the srl.nds hash
-	memset(footer->content_hash[1], 0, 0x20*9); //Zero out hashes we don't use for dlp
+	memset(footer->content_hash[1], 0, 0x20*9); //Zero out hashes we don't use for DS int
 
 	printf("Signing footer with 0x%x byte ctcert file\n", ctcert_size);
 	Result res = doSigning(ctcert, footer);
@@ -177,7 +190,7 @@ void makeTad(char *filename, u32 ishax) {
 	placeSection((dsiware + 0x5190), injection, injection_size, normalKey, normalKey_CMAC);
 	
 	// === OUTPUT ===
-	const char *outname = ishax ? "output/hax/484E4441.bin" : "output/clean/484E4441.bin";
+	const char *outname = ishax ? "output/hax/42383841.bin" : "output/clean/42383841.bin";
 
 	printf("Writing %s\n", outname);
 	writeAllBytes(outname, dsiware, dsiware_size);
@@ -192,9 +205,9 @@ void makeTad(char *filename, u32 ishax) {
 }
 
 int main(int argc, char* argv[]) {
-	printf("Fredtool v1.0 - zoogie , jason0597\n");
-	makeTad(argv[1], 1); //DS dlp injected with JPN flipnote v0
-	makeTad(argv[1], 0); //DS dlp clean, intended for restoring title to prehax state
+	printf("Fredtool v1.5 - zoogie , jason0597\n");
+	makeTad(argv[1], 1); //DS internet injected with JPN flipnote v0
+	makeTad(argv[1], 0); //DS internet clean, intended for restoring title to prehax state
 	printf("\nJobs completed\n");
 	
 	return 0;
